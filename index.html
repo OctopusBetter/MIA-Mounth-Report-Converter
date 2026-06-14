@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Конвертер звіту за місяць по МІА</title>
+    <!-- Завантажуємо бібліотеку з інтернету -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script>
+        // Якщо інтернету немає, завантажуємо локальну копію
+        if (typeof XLSX === 'undefined') {
+            document.write('<script src="xlsx.full.min.js"><\/script>');
+        }
+    </script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f5f7fa; color: #333; }
+        h1 { text-align: center; color: #2c3e50; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .btn-copy { display: block; width: 100%; padding: 15px; background-color: #27ae60; color: white; font-size: 18px; font-weight: bold; text-align: center; border: none; border-radius: 5px; cursor: pointer; margin-bottom: 20px; transition: 0.3s; }
+        .btn-copy:hover { background-color: #2ecc71; }
+        
+        .upload-area { border: 2px dashed #3498db; padding: 30px; text-align: center; border-radius: 8px; margin-bottom: 20px; background-color: #ebf5fb; cursor: pointer; transition: 0.3s; display: block; }
+        .upload-area:hover { background-color: #d6eaf8; }
+        .upload-area input { display: none; }
+        
+        #status-box { margin-bottom: 20px; padding: 15px; border-radius: 5px; display: none; }
+        .status-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .status-error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { border: 1px solid #ddd; padding: 6px 12px; text-align: left; }
+        th { background-color: #3498db; color: white; }
+        tr:hover td { filter: brightness(0.95); }
+        
+        /* Кольори рядків */
+        .formula-row { background-color: #e8eaed !important; color: #7f8c8d; font-style: italic; }
+        .skipped-row { background-color: #ffe0b2; } /* Помаранчевий для рядків, що не копіюються */
+        .loaded-row { background-color: #d4edda; } /* Зелений - дані завантажено */
+        .missing-row { background-color: #f8d7da; } /* Червоний - файл відсутній */
+        
+        input[type="text"], select { width: 100%; padding: 5px; border: 1px solid #ccc; border-radius: 3px; font-size: 14px; box-sizing: border-box; background-color: rgba(255,255,255,0.8); }
+        .formula-cell { text-align: center; user-select: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Конвертер звіту за місяць по МІА</h1>
+        
+        <label class="upload-area" id="upload-label">
+            <h3 style="margin-top: 0;">📂 Натисніть тут, щоб вибрати 7 файлів .xls</h3>
+            <p style="margin-bottom: 0; color: #555;">Або просто перетягніть їх сюди</p>
+            <input type="file" id="file-input" multiple accept=".xls,.xlsx">
+        </label>
+        
+        <div id="status-box"></div>
+
+        <button class="btn-copy" onclick="copyToClipboard()" id="btn-copy" style="display: none;">📋 Скопіювати стовпець у буфер обміну</button>
+        
+        <div id="instructions" style="display: none; margin-bottom: 15px; font-size: 14px;">
+            <p>Клітинки <strong style="color:#7f8c8d;">сірого кольору</strong> — <strong>Формули ("Усього")</strong>. Вони заблоковані для редагування і при копіюванні будуть замінені на порожній рядок, щоб не пошкодити формули у Google Таблицях.</p>
+            <p>Перші два рядки (Місяць, Назва закладу) виділені <strong>помаранчевим</strong>. Ви можете їх змінювати, і вони збережуться, але при натисканні кнопки "Скопіювати" <strong>вони взагалі не потраплять до буфера обміну</strong>. Копіювання почнеться зі статусу підключення.</p>
+            <p>Клітинки <strong style="color:#155724;">зеленого кольору</strong> успішно заповнені з файлів. Клітинки <strong style="color:#721c24;">червоного кольору</strong> не отримали даних (не вистачає файлу).</p>
+        </div>
+
+        <table id="result-table" style="display: none;">
+            <tr>
+                <th style="width: 50px;">№</th>
+                <th>Назва поля (із шаблону)</th>
+                <th style="width: 200px;">Значення для вставки</th>
+            </tr>
+            <tbody id="table-body">
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let extractedData = {
+            zapis: {},
+            priyom: {},
+            ehealth_ext: {},
+            mvtn: {},
+            diag_zvit: {},
+            vlk: {},
+            profoglyad: {},
+            meta: {}
+        };
+
+        const fileInput = document.getElementById('file-input');
+        const uploadLabel = document.getElementById('upload-label');
+        const statusBox = document.getElementById('status-box');
+        const btnCopy = document.getElementById('btn-copy');
+        const resultTable = document.getElementById('result-table');
+        const instructions = document.getElementById('instructions');
+        const tbody = document.getElementById('table-body');
+
+        uploadLabel.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadLabel.style.backgroundColor = '#d6eaf8';
+        });
+        uploadLabel.addEventListener('dragleave', () => {
+            uploadLabel.style.backgroundColor = '#ebf5fb';
+        });
+        uploadLabel.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadLabel.style.backgroundColor = '#ebf5fb';
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function showStatus(message, isError = false) {
+            statusBox.style.display = 'block';
+            statusBox.className = isError ? 'status-error' : 'status-success';
+            statusBox.innerHTML = message;
+        }
+
+        async function handleFiles(files) {
+            if (files.length === 0) return;
+            
+            showStatus("Обробка файлів...", false);
+            extractedData = { 
+                zapis: {}, priyom: {}, ehealth_ext: {}, mvtn: {}, diag_zvit: {}, vlk: {}, profoglyad: {},
+                meta: { org: "АРЗ СП ГУ ДСНС УКРАЇНИ У ХАРКІВСЬКІЙ ОБЛАСТІ" }
+            };
+            let processedTypes = new Set();
+            let errors = [];
+
+            for (let i = 0; i < files.length; i++) {
+                let file = files[i];
+                let name = file.name.toLowerCase();
+                
+                let match = name.match(/\d{2}\.(\d{2})\.\d{4}/);
+                if (match && !extractedData.meta.month) {
+                    const monthIdx = parseInt(match[1], 10) - 1;
+                    const months = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
+                    if (monthIdx >= 0 && monthIdx < 12) {
+                        extractedData.meta.month = months[monthIdx];
+                    }
+                }
+                let type = null;
+
+                if (name.includes('запис на прийом')) type = 'zapis';
+                else if (name.includes('амбулаторний прийом')) type = 'priyom';
+                else if (name.includes('зареєстровані в ehealth')) type = 'ehealth_ext';
+                else if (name.includes('мвтн')) type = 'mvtn';
+                else if (name.includes('діагностичні звіти')) type = 'diag_zvit';
+                else if (name.includes('влк')) type = 'vlk';
+                else if (name.includes('профогляд')) type = 'profoglyad';
+
+                if (type) {
+                    try {
+                        await processExcelFile(file, type);
+                        processedTypes.add(type);
+                    } catch (e) {
+                        errors.push(`Помилка у файлі ${file.name}: ${e.message}`);
+                    }
+                }
+            }
+
+            let loadedCount = processedTypes.size;
+            let missingTypes = [];
+            if (!processedTypes.has('zapis')) missingTypes.push('Запис на прийом');
+            if (!processedTypes.has('priyom')) missingTypes.push('Амбулаторний прийом лікаря');
+            if (!processedTypes.has('ehealth_ext')) missingTypes.push('Зареєстровані в eHealth направлення');
+            if (!processedTypes.has('mvtn')) missingTypes.push('МВТН');
+            if (!processedTypes.has('diag_zvit')) missingTypes.push('Створені діагностичні звіти');
+            if (!processedTypes.has('vlk')) missingTypes.push('ВЛК');
+            if (!processedTypes.has('profoglyad')) missingTypes.push('Профогляд');
+
+            let statusMsg = `Успішно оброблено файлів: ${loadedCount} з 7.`;
+            if (missingTypes.length > 0) {
+                statusMsg += `<br><strong>Увага! Не вистачає файлів:</strong><ul><li>${missingTypes.join('</li><li>')}</li></ul>`;
+            }
+
+            if (errors.length > 0) {
+                statusMsg += `<br><strong>Помилки зчитування:</strong><br>` + errors.join("<br>");
+            }
+
+            showStatus(statusMsg, missingTypes.length > 0);
+            
+            renderTable();
+            instructions.style.display = 'block';
+            btnCopy.style.display = 'block';
+            resultTable.style.display = 'table';
+        }
+
+        function processExcelFile(file, type) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = XLSX.read(data, {type: 'array'});
+                        const firstSheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[firstSheetName];
+                        
+                        const rows = XLSX.utils.sheet_to_json(worksheet, {header: 1, defval: ""});
+                        
+                        let maxCols = 0;
+                        let headerIdx = 0;
+                        for (let i = 0; i < Math.min(15, rows.length); i++) {
+                            if (!rows[i]) continue;
+                            let cols = rows[i].filter(cell => cell !== "").length;
+                            if (cols > maxCols) {
+                                maxCols = cols;
+                                headerIdx = i;
+                            }
+                        }
+
+                        let headerRow = rows[headerIdx];
+                        let dataRow = null;
+
+                        // Шукаємо рядок з підсумками (Всього, Разом, Загальний підсумок)
+                        for (let r = headerIdx + 1; r < Math.min(headerIdx + 10, rows.length); r++) {
+                            if (!rows[r]) continue;
+                            let cell0 = (rows[r][0] || "").toString().toLowerCase();
+                            let cell1 = (rows[r][1] || "").toString().toLowerCase();
+                            
+                            if (cell0.includes("разом") || cell0.includes("всього") || cell0.includes("загальний") ||
+                                cell1.includes("разом") || cell1.includes("всього") || cell1.includes("загальний")) {
+                                dataRow = rows[r];
+                                break;
+                            }
+                        }
+
+                        // Якщо не знайшли по слову, беремо перший рядок, де є хоча б 3 заповнені комірки
+                        if (!dataRow) {
+                            for (let r = headerIdx + 1; r < rows.length; r++) {
+                                if (rows[r] && rows[r].filter(c => c !== "").length >= 3) {
+                                    dataRow = rows[r];
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!dataRow) {
+                            reject(new Error("Не знайдено рядок з даними (підсумками)"));
+                            return;
+                        }
+
+                        if (type === 'napravl_int') {
+                            extractedData[type]['Загальний підсумок'] = dataRow[dataRow.length - 1];
+                        } else {
+                            for (let col = 0; col < headerRow.length; col++) {
+                                let headerName = headerRow[col];
+                                if (typeof headerName === 'string') {
+                                    headerName = headerName.trim();
+                                    extractedData[type][headerName] = dataRow[col];
+                                }
+                            }
+                        }
+                        resolve();
+                    } catch (err) {
+                        reject(err);
+                    }
+                };
+                reader.onerror = function() {
+                    reject(new Error("Не вдалося прочитати файл"));
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        function formatValue(val) {
+            if (typeof val === 'number') {
+                if (val % 1 !== 0) {
+                    return val.toFixed(2).replace('.', ',');
+                }
+                return val.toString();
+            }
+            if (typeof val === 'string' && val.includes('.')) {
+                // Если это строка с точкой, но похожа на число
+                let parsed = parseFloat(val);
+                if (!isNaN(parsed) && val.match(/^\d+\.\d+$/)) {
+                    return parsed.toFixed(2).replace('.', ',');
+                }
+            }
+            return val;
+        }
+
+        function getExtractedVal(type, partialKey) {
+            let dict = extractedData[type];
+            if (!dict) return 0;
+            
+            // 1. Спочатку шукаємо точний збіг
+            for (let key in dict) {
+                if (key.trim().toLowerCase() === partialKey.trim().toLowerCase()) {
+                    return formatValue(dict[key]);
+                }
+            }
+            
+            // 2. Якщо не знайдено, шукаємо частковий збіг
+            for (let key in dict) {
+                if (key.toLowerCase().includes(partialKey.toLowerCase())) {
+                    return formatValue(dict[key]);
+                }
+            }
+            return 0;
+        }
+
+        function renderTable() {
+            // [id, label, ui_type, copy_behavior, value, source_file_type]
+            const template = [
+                ["r0", "Місяць", "month", "skip", getExtractedVal('meta', 'month') || "Листопад", 'meta'],
+                ["r1", "Назва закладу", "text", "skip", getExtractedVal('meta', 'org'), 'meta'],
+                ["r2", "Статус підключення (МІС)", "yes_no", "normal", "ТАК", null],
+                ["r3", "Статус підключення (Ні)", "text", "normal", "", null],
+                ["r4", "Співробітників (МІС)", "text", "normal", "14", null],
+                ["r5", "Співробітників (eHealth)", "text", "normal", "14", null],
+                ["r6", "Пацієнтів у МІС", "text", "normal", "4739", null],
+                
+                ["r7", "Усього проведено прийомів (Формула)", "formula", "blank", getExtractedVal('zapis', 'Всього'), 'zapis'],
+                ["r8", "Записи на прийом", "text", "normal", getExtractedVal('zapis', 'Записи на прийом'), 'zapis'],
+                ["r9", "Проведення прийому без запису", "text", "normal", getExtractedVal('zapis', 'Проведення прийому без запису'), 'zapis'],
+                
+                ["r10", "Є графіки", "yes_no", "normal", "ТАК", null],
+                ["r11", "Є графіки з кабінетом", "yes_no", "normal", "НІ", null],
+                
+                ["r12", "Усього прийомів, у т.ч. (Формула)", "formula", "blank", getExtractedVal('priyom', 'Всього прийомів'), 'priyom'],
+                ["r13", "Прийом у клініці", "text", "normal", getExtractedVal('priyom', 'Прийоми'), 'priyom'],
+                ["r14", "Профогляд", "text", "normal", getExtractedVal('priyom', 'Профогляд'), 'priyom'],
+                ["r15", "ЦЛЕК (ЛЕК)", "text", "normal", getExtractedVal('priyom', 'ВЛК'), 'priyom'],
+                
+                ["r16", "Загалом заповнення прийомів (%) (Формула)", "formula", "blank", "", null],
+                ["r17", "Причина звернення (%)", "text", "normal", getExtractedVal('priyom', 'Причини звернення (скарги), %'), 'priyom'],
+                ["r18", "Об'єктивно (%)", "text", "normal", getExtractedVal('priyom', 'Об\'єктивний огляд, %'), 'priyom'],
+                ["r19", "Діагноз (%)", "text", "normal", getExtractedVal('priyom', 'Діагноз, %'), 'priyom'],
+                ["r20", "Розширений діагноз (%)", "text", "normal", getExtractedVal('priyom', 'Розширений діагноз, %'), 'priyom'],
+                ["r21", "Заключення (%)", "text", "normal", getExtractedVal('priyom', 'Заключення, %'), 'priyom'],
+                ["r22", "Рекомендації (%)", "text", "normal", getExtractedVal('priyom', 'Рекомендації, %'), 'priyom'],
+                
+                ["r23", "Усього створено зовнішніх е-напр. (Формула)", "formula", "blank", getExtractedVal('ehealth_ext', 'Загальний підсумок') || getExtractedVal('ehealth_ext', 'Всього'), 'ehealth_ext'],
+                ["r24", "Лікувально-діагностичні процедури", "text", "normal", getExtractedVal('ehealth_ext', 'Лікувально-діагностична'), 'ehealth_ext'],
+                ["r25", "Госпіталізація", "text", "normal", getExtractedVal('ehealth_ext', 'Стаціонар'), 'ehealth_ext'],
+                ["r26", "Діагностичні процедури (+ візуалізація)", "text", "normal", 
+                    (parseFloat(getExtractedVal('ehealth_ext', 'Діагностична процедура')) || 0) + 
+                    (parseFloat(getExtractedVal('ehealth_ext', 'Візуалізація')) || 0), 'ehealth_ext'],
+                ["r27", "Консультацію", "text", "normal", getExtractedVal('ehealth_ext', 'Консультації'), 'ehealth_ext'],
+                ["r28", "Лабораторну діагностику", "text", "normal", getExtractedVal('ehealth_ext', 'Лабораторна діагностика'), 'ehealth_ext'],
+                ["r29", "Лабораторну діагностику (Дублікат)", "text", "normal", "", null],
+                ["r30", "Процедури", "text", "normal", getExtractedVal('ehealth_ext', 'Процедура'), 'ehealth_ext'],
+                ["r31", "Реабілітацію", "text", "normal", getExtractedVal('ehealth_ext', 'Реабілітація'), 'ehealth_ext'],
+                
+                ["r32", "Усього створено внутрішніх е-напр.", "text", "normal", 0, 'unknown'],
+                ["r33", "Усього створено внутр. на лаб. діагностику", "text", "normal", 0, 'unknown'],
+                
+                ["r34", "Усього створено е-лікарняних", "text", "normal", getExtractedVal('mvtn', 'Всього'), 'mvtn'],
+                
+                ["r35", "Усього введено діагностику", "text", "normal", getExtractedVal('diag_zvit', 'Всього'), 'diag_zvit'],
+                ["r36", "Взаємодія поліклініка-лабораторія", "text", "normal", 0, 'unknown'],
+                ["r37", "Реабілітація", "text", "normal", 0, 'unknown'],
+                ["r38", "Стаціонар: Історія хвороби", "text", "normal", 0, 'unknown'],
+                
+                ["r39", "Усього звернень (Формула)", "formula", "blank", "", null],
+                ["r40", "Нові", "text", "normal", 0, 'unknown'],
+                ["r41", "Госпіталізовано", "text", "normal", 0, 'unknown'],
+                ["r42", "Виписано", "text", "normal", 0, 'unknown'],
+                ["r43", "Діагнози", "text", "normal", 0, 'unknown'],
+                ["r44", "Розширені діагнози", "text", "normal", 0, 'unknown'],
+                ["r45", "Епікризи", "text", "normal", 0, 'unknown'],
+                ["r46", "Щоденники", "text", "normal", 0, 'unknown'],
+                ["r47", "Консультації", "text", "normal", 0, 'unknown'],
+                ["r48", "Операції", "text", "normal", 0, 'unknown'],
+                ["r49", "МВТН (Стаціонар)", "text", "normal", 0, 'unknown'],
+                ["r50", "Рекомендації", "text", "normal", 0, 'unknown'],
+                
+                ["r51", "Напр. на діагностику (Усього) (Формула)", "formula", "blank", "", null],
+                ["r52", "Візуалізація", "text", "normal", 0, 'unknown'],
+                ["r53", "Діагностична процедура", "text", "normal", 0, 'unknown'],
+                ["r54", "Консультація", "text", "normal", 0, 'unknown'],
+                ["r55", "Лікувально-діагностична процедура", "text", "normal", 0, 'unknown'],
+                
+                ["r56", "Напр. на лаб. діагностику (Усього) (Формула)", "formula", "blank", "", null],
+                
+                ["r57", "Взаємодія стаціонар-діагностика", "text", "normal", 0, 'unknown'],
+                ["r58", "Взаємодія стаціонар-лабораторія", "text", "normal", 0, 'unknown'],
+                
+                ["r59", "Графік роботи лікарів", "yes_no", "normal", "ТАК", null],
+                ["r60", "Е-черга", "yes_no", "normal", "ТАК", null],
+                
+                ["r61", "Усього висновків ЦЛЕК (Формула)", "formula", "blank", getExtractedVal('vlk', 'Всього'), 'vlk'],
+                ["r62", "Підписаних", "text", "normal", getExtractedVal('vlk', 'Підписано'), 'vlk'],
+                ["r63", "Знаходяться 'в роботі'", "text", "normal", getExtractedVal('vlk', 'В роботі'), 'vlk'],
+                ["r64", "На перевірці-на підписанні", "text", "normal", (parseFloat(getExtractedVal('vlk', 'На перевірці')) || 0) + (parseFloat(getExtractedVal('vlk', 'На підписанні')) || 0), 'vlk']
+            ];
+
+            tbody.innerHTML = '';
+            window.templateData = template;
+
+            template.forEach((item, index) => {
+                const [id, label, ui_type, copy_behavior, extracted_val, source_file_type] = item;
+                
+                let finalVal = extracted_val;
+
+                let saved = localStorage.getItem(id);
+                if (saved !== null) {
+                    if (typeof extracted_val === 'string' || extracted_val === 0 || isNaN(extracted_val)) {
+                        finalVal = saved;
+                    } else if (extracted_val > 0) {
+                        finalVal = extracted_val;
+                    }
+                }
+
+                if (typeof finalVal === 'number' && !isNaN(finalVal)) {
+                    if (Number.isInteger(finalVal)) {
+                        finalVal = finalVal.toString();
+                    } else {
+                        finalVal = finalVal.toFixed(2).replace('.', ',');
+                    }
+                } else if (typeof finalVal === 'string' && finalVal !== "" && !isNaN(parseFloat(finalVal)) && finalVal.includes('.')) {
+                    let floatVal = parseFloat(finalVal);
+                    if (!Number.isInteger(floatVal)) {
+                        finalVal = floatVal.toFixed(2).replace('.', ',');
+                    }
+                }
+
+                const row = document.createElement('tr');
+                
+                // Визначаємо колір рядка на основі джерела даних
+                if (source_file_type === 'unknown') {
+                    row.classList.add("missing-row");
+                    row.dataset.originalMissing = "true";
+                } else if (source_file_type) {
+                    if (extractedData[source_file_type] && Object.keys(extractedData[source_file_type]).length > 0) {
+                        row.classList.add("loaded-row");
+                    } else {
+                        row.classList.add("missing-row");
+                        row.dataset.originalMissing = "true";
+                    }
+                }
+
+                if (ui_type === "formula") {
+                    row.className = "formula-row"; // Формули завжди сірі
+                } else if (copy_behavior === "skip" && !row.classList.contains("loaded-row")) {
+                    row.className = "skipped-row"; // Помаранчевий тільки якщо дані не завантажились
+                }
+
+                let inputHtml = "";
+                if (ui_type === "formula") {
+                    inputHtml = `<td><input type="text" id="${id}" value="${finalVal}" onchange="saveValue('${id}', this.value)" style="background-color: transparent; border: 1px dashed #999; color: #555; text-align: center;" title="Формула: значення лише для перегляду"></td>`;
+                } else if (ui_type === "yes_no") {
+                    const selTak = finalVal === "ТАК" ? "selected" : "";
+                    const selNi = finalVal === "НІ" ? "selected" : "";
+                    inputHtml = `<td><select id="${id}" onchange="saveValue('${id}', this.value)"><option value="ТАК" ${selTak}>ТАК</option><option value="НІ" ${selNi}>НІ</option></select></td>`;
+                } else if (ui_type === "month") {
+                    const months = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
+                    let options = months.map(m => `<option value="${m}" ${finalVal === m ? "selected" : ""}>${m}</option>`).join("");
+                    inputHtml = `<td><select id="${id}" onchange="saveValue('${id}', this.value)">${options}</select></td>`;
+                } else {
+                    inputHtml = `<td><input type="text" id="${id}" value="${finalVal}" onchange="saveValue('${id}', this.value)"></td>`;
+                }
+
+                row.innerHTML = `
+                    <td>${index + 1}</td>
+                    <td>${label}</td>
+                    ${inputHtml}
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function saveValue(id, val) {
+            localStorage.setItem(id, val);
+            const el = document.getElementById(id);
+            if (el) {
+                const tr = el.closest('tr');
+                if (val.trim() === "") {
+                    // Зкидаємо кольори до стандартних
+                    el.style.backgroundColor = '';
+                    el.style.color = '';
+                    if (tr && tr.classList.contains('formula-row')) {
+                        el.style.borderColor = '#999';
+                    } else {
+                        el.style.borderColor = '';
+                    }
+                    
+                    // Повертаємо червоний колір рядку, якщо він відпочатку був missing
+                    if (tr && tr.dataset.originalMissing === "true") {
+                        tr.classList.remove('loaded-row');
+                        tr.classList.add('missing-row');
+                    }
+                } else {
+                    if (tr && tr.classList.contains('formula-row')) {
+                        // Для формул зберігаємо нейтральний дизайн
+                        el.style.backgroundColor = 'transparent';
+                        el.style.color = '#555';
+                        el.style.borderColor = '#999';
+                    } else {
+                        // Фарбуємо клітинку (інпут) у зелений
+                        el.style.backgroundColor = '#d4edda';
+                        el.style.color = '#155724';
+                        el.style.borderColor = '#c3e6cb';
+                        
+                        // Якщо рядок був червоним, робимо його зеленим
+                        if (tr) {
+                            tr.classList.remove('missing-row');
+                            tr.classList.add('loaded-row');
+                        }
+                    }
+                }
+            }
+        }
+
+        function copyToClipboard() {
+            let copyText = "";
+            window.templateData.forEach((item) => {
+                const [id, label, ui_type, copy_behavior] = item;
+                
+                if (copy_behavior === "skip") {
+                    return;
+                }
+                
+                if (copy_behavior === "blank") {
+                    copyText += "\n";
+                } else {
+                    const val = document.getElementById(id).value;
+                    copyText += val + "\n";
+                }
+            });
+            
+            if (copyText.endsWith("\n")) {
+                copyText = copyText.slice(0, -1);
+            }
+            
+            navigator.clipboard.writeText(copyText).then(function() {
+                const originalText = btnCopy.innerText;
+                btnCopy.innerText = "✅ Успішно скопійовано!";
+                btnCopy.style.backgroundColor = "#27ae60";
+                setTimeout(() => {
+                    btnCopy.innerText = originalText;
+                }, 2000);
+            }, function(err) {
+                alert('Помилка копіювання: ' + err);
+            });
+        }
+    </script>
+    
+    <!-- Скрипт статистики (Розширена) -->
+    <script>
+        window.addEventListener('load', () => {
+            const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw-a3CuEFwWl2Mzq804hApwyVKzbNGWLkSYAO0piLu_DWxISnXJazewG-SHGE_DQIL-xw/exec';
+            
+            if (GOOGLE_SCRIPT_URL && GOOGLE_SCRIPT_URL.includes('script.google.com')) {
+                // Отримуємо IP та гео-дані
+                fetch('https://ipinfo.io/json')
+                    .then(response => response.json())
+                    .then(data => {
+                        const ip = data.ip || '';
+                        const city = (data.city ? data.city + ', ' + data.country : '');
+                        const org = data.org || '';
+                        const time = new Date().toLocaleString('uk-UA');
+                        
+                        // Дані браузера
+                        const ua = navigator.userAgent;
+                        const screen = window.screen.width + 'x' + window.screen.height;
+                        const lang = navigator.language;
+                        
+                        const url = new URL(GOOGLE_SCRIPT_URL);
+                        url.searchParams.append('ip', ip);
+                        url.searchParams.append('time', time);
+                        url.searchParams.append('city', city);
+                        url.searchParams.append('org', org);
+                        url.searchParams.append('ua', ua);
+                        url.searchParams.append('screen', screen);
+                        url.searchParams.append('lang', lang);
+                        
+                        fetch(url.toString(), { mode: 'no-cors' }).catch(() => {});
+                    })
+                    .catch(() => {});
+            }
+        });
+    </script>
+
+    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; color: #7f8c8d; font-size: 14px;">
+        Розроблено: Арнаутов Владислав Анатолійович &copy; 2026
+    </div>
+</body>
+</html>
